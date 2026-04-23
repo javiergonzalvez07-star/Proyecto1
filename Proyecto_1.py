@@ -57,7 +57,7 @@ def guardar(df: pd.DataFrame) -> None:
     """Añade el DataFrame al CSV (crea el archivo si no existe)."""
     cabecera = not pd.io.common.file_exists(CSV_PATH)
     df.to_csv(CSV_PATH, mode="a", header=cabecera, index=False)
-    print(f"✅  {len(df)} fila(s) guardadas en {CSV_PATH}")
+    print(f" {len(df)} fila(s) guardadas en {CSV_PATH}")
 
 
 # ── Demo ────────────────────────────────────────────────────────────────────
