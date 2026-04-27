@@ -1,0 +1,304 @@
+#include <Wire.h>
+#include "esp_sleep.h"
+
+// =====================
+// CONFIGURACION GENERAL
+// =====================
+
+// MPU6050
+#define I2C_SDA 21
+#define I2C_SCL 22
+#define MPU6050_ADDR 0x68
+
+// Pin INT del MPU6050 para despertar el ESP32
+// Conectar MPU6050 INT -> GPIO 33
+#define WAKE_PIN 33
+
+// MAX6675
+#define MAX6675_SCK 18
+#define MAX6675_SO 19
+#define MAX6675_CS 5
+
+// PIEZO ANALOGICO
+#define PIEZO_PIN 34
+
+// Tiempo entre medidas
+#define INTERVAL_MS 500
+
+// Tiempo despierto midiendo
+#define MEASUREMENT_WINDOW_SECONDS 20
+
+// Para probar primero, déjalo en false.
+// Cuando ya veas datos correctos por Serial, ponlo en true.
+#define USE_DEEP_SLEEP false
+
+// Parametros de deteccion de movimiento
+#define MOTION_THRESHOLD 20
+#define MOTION_DURATION 5
+
+const char* HEADER = "timestamp_ms,temp_c,ax,ay,az,gx,gy,gz,piezo_raw";
+
+
+// =====================
+// FUNCIONES MPU6050
+// =====================
+
+void writeMPURegister(uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(reg);
+  Wire.write(value);
+  Wire.endTransmission();
+}
+
+uint8_t readMPURegister(uint8_t reg) {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(reg);
+  Wire.endTransmission(false);
+
+  Wire.requestFrom(MPU6050_ADDR, 1);
+  if (Wire.available()) {
+    return Wire.read();
+  }
+
+  return 0;
+}
+
+int16_t readMPUWord(uint8_t reg) {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(reg);
+  Wire.endTransmission(false);
+
+  Wire.requestFrom(MPU6050_ADDR, 2);
+
+  if (Wire.available() < 2) {
+    return 0;
+  }
+
+  uint8_t high = Wire.read();
+  uint8_t low = Wire.read();
+
+  return (int16_t)((high << 8) | low);
+}
+
+void setupMPU6050() {
+  // Despertar sensor
+  writeMPURegister(0x6B, 0x00);
+  delay(100);
+
+  // Acelerometro +-2g
+  writeMPURegister(0x1C, 0x00);
+
+  // Giroscopio +-250 grados/s
+  writeMPURegister(0x1B, 0x00);
+
+  // Filtro pasa-bajos interno
+  writeMPURegister(0x1A, 0x06);
+}
+
+void readAccel(float &ax, float &ay, float &az) {
+  ax = readMPUWord(0x3B) / 16384.0;
+  ay = readMPUWord(0x3D) / 16384.0;
+  az = readMPUWord(0x3F) / 16384.0;
+}
+
+void readGyro(float &gx, float &gy, float &gz) {
+  gx = readMPUWord(0x43) / 131.0;
+  gy = readMPUWord(0x45) / 131.0;
+  gz = readMPUWord(0x47) / 131.0;
+}
+
+void clearMPUInterrupt() {
+  readMPURegister(0x3A);
+}
+
+void configureMotionInterrupt() {
+  // Despertar MPU6050
+  writeMPURegister(0x6B, 0x00);
+  delay(100);
+
+  // Acelerometro +-2g
+  writeMPURegister(0x1C, 0x00);
+
+  // Filtro pasa-bajos
+  writeMPURegister(0x1A, 0x06);
+
+  // Umbral de movimiento
+  // 1 LSB aprox equivale a 2 mg
+  writeMPURegister(0x1F, MOTION_THRESHOLD);
+
+  // Duracion minima del movimiento
+  writeMPURegister(0x20, MOTION_DURATION);
+
+  // Configuracion de deteccion de movimiento
+  writeMPURegister(0x69, 0x15);
+
+  // Interrupcion latchada hasta leer INT_STATUS
+  writeMPURegister(0x37, 0x20);
+
+  // Activar interrupcion por movimiento
+  writeMPURegister(0x38, 0x40);
+
+  // Low power mode
+  writeMPURegister(0x6B, 0x20);
+
+  // Wake rate bajo + giroscopio en standby
+  writeMPURegister(0x6C, 0x47);
+
+  clearMPUInterrupt();
+}
+
+
+// =====================
+// FUNCIONES MAX6675
+// =====================
+
+float readMAX6675Temp(bool &ok) {
+  digitalWrite(MAX6675_CS, LOW);
+  delayMicroseconds(10);
+
+  uint16_t value = 0;
+
+  for (int i = 0; i < 16; i++) {
+    digitalWrite(MAX6675_SCK, HIGH);
+    delayMicroseconds(1);
+
+    value = (value << 1) | digitalRead(MAX6675_SO);
+
+    digitalWrite(MAX6675_SCK, LOW);
+    delayMicroseconds(1);
+  }
+
+  digitalWrite(MAX6675_CS, HIGH);
+
+  // Bit 2 indica termopar desconectado
+  if (value & 0x04) {
+    ok = false;
+    return 0.0;
+  }
+
+  ok = true;
+  value >>= 3;
+
+  return value * 0.25;
+}
+
+
+// =====================
+// MEDICION
+// =====================
+
+void tomarMedida() {
+  unsigned long timestamp_ms = millis();
+
+  bool temp_ok = false;
+  float temp_c = readMAX6675Temp(temp_ok);
+
+  float ax, ay, az;
+  float gx, gy, gz;
+
+  readAccel(ax, ay, az);
+  readGyro(gx, gy, gz);
+
+  int piezo_raw = analogRead(PIEZO_PIN);
+
+  Serial.print(timestamp_ms);
+  Serial.print(",");
+
+  if (temp_ok) {
+    Serial.print(temp_c, 2);
+  }
+
+  Serial.print(",");
+  Serial.print(ax, 4);
+  Serial.print(",");
+  Serial.print(ay, 4);
+  Serial.print(",");
+  Serial.print(az, 4);
+  Serial.print(",");
+  Serial.print(gx, 4);
+  Serial.print(",");
+  Serial.print(gy, 4);
+  Serial.print(",");
+  Serial.print(gz, 4);
+  Serial.print(",");
+  Serial.println(piezo_raw);
+}
+
+
+// =====================
+// SETUP
+// =====================
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Wire.begin(I2C_SDA, I2C_SCL, 400000);
+
+  pinMode(MAX6675_SCK, OUTPUT);
+  pinMode(MAX6675_SO, INPUT);
+  pinMode(MAX6675_CS, OUTPUT);
+
+  digitalWrite(MAX6675_CS, HIGH);
+  digitalWrite(MAX6675_SCK, LOW);
+
+  analogReadResolution(12);
+  analogSetPinAttenuation(PIEZO_PIN, ADC_11db);
+
+  setupMPU6050();
+
+  Serial.println(HEADER);
+
+  uint8_t whoami = readMPURegister(0x75);
+  if (whoami != 0x68) {
+    Serial.print("# AVISO: MPU6050 no responde como esperado. WHO_AM_I = ");
+    Serial.println(whoami, HEX);
+  }
+
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
+    Serial.println("# Despertado desde deep sleep por vibracion.");
+  } else {
+    Serial.println("# Arranque normal.");
+  }
+
+  Serial.print("# Iniciando ventana de medicion durante ");
+  Serial.print(MEASUREMENT_WINDOW_SECONDS);
+  Serial.println(" segundos.");
+
+  unsigned long start_ms = millis();
+
+  while (millis() - start_ms < MEASUREMENT_WINDOW_SECONDS * 1000UL) {
+    tomarMedida();
+    delay(INTERVAL_MS);
+  }
+
+  Serial.println("# Ventana de medicion terminada.");
+
+  if (USE_DEEP_SLEEP) {
+    Serial.println("# Configurando MPU6050 para despertar por movimiento...");
+
+    configureMotionInterrupt();
+
+    pinMode(WAKE_PIN, INPUT_PULLDOWN);
+
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_PIN, 1);
+
+    Serial.println("# Entrando en deep sleep...");
+    delay(300);
+
+    esp_deep_sleep_start();
+  } else {
+    Serial.println("# Deep sleep desactivado. Cambia USE_DEEP_SLEEP a true cuando quieras activarlo.");
+  }
+}
+
+
+// =====================
+// LOOP
+// =====================
+
+void loop() {
+  // Si USE_DEEP_SLEEP está en false, seguirá midiendo continuamente.
+  tomarMedida();
+  delay(INTERVAL_MS);
+}

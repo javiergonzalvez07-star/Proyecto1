@@ -1,0 +1,17 @@
+ORDEN PARA CORRER TODO:
+
+
+SIMULACIÓN:
+
+python -m streamlit run app.py
+
+python Demo/simulador_demo.py
+
+
+DEMO REAL:
+
+python Data/logger_serial_csv.py
+
+python Limpieza/limpieza_normalizacion.py
+
+python -m streamlit run app.py
