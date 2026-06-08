@@ -1,17 +1,37 @@
-ORDEN PARA CORRER TODO:
+ORDEN PARA CORRER TODO
 
 
-SIMULACIÓN:
+ANTES DE EMPEZAR
 
-python -m streamlit run app.py
+Instalar dependencias si cambiaste de ordenador o de Python:
 
+python -m pip install streamlit pandas numpy plotly pyserial scipy
+
+
+SIMULACION
+
+Terminal 1:
 python Demo/simulador_demo.py
 
+Terminal 2:
+python Limpieza/Limpieza_y_Normalizacion.py
 
-DEMO REAL:
+Terminal 3:
+python -m streamlit run app.py
 
+
+DEMO REAL
+
+IMPORTANTE:
+- Cierra Arduino IDE Serial Monitor, PuTTY u otros programas que usen COM3.
+- Estos comandos se dejan corriendo, por eso van en terminales separadas.
+- Para parar un comando: CTRL + C.
+
+Terminal 1:
 python Data/logger_serial_csv.py
 
-python Limpieza/limpieza_normalizacion.py
+Terminal 2:
+python Limpieza/Limpieza_y_Normalizacion.py
 
+Terminal 3:
 python -m streamlit run app.py
